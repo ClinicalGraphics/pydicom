@@ -1,5 +1,14 @@
 #summary Release notes for pydicom package releases
 ----
+= Release Notes pydicom 0.9.10 =
+
+== Major changes / enhancements ==
+  * If GDCM wrappers are available, additional (compressed!) pixel data data formats can be handled.
+
+== Contrib file changes ==
+  * dataset:  gdcm support added (Clinical Graphics, Korijn van Golen)
+
+
 = Release Notes pydicom 0.9.9 =
 
 In addition to bug fixes, pydicom 0.9.9 contains updates for all dicom dictionaries. 
