@@ -1,0 +1,8 @@
+name:  pydicom
+channels:
+  - clinicalgraphics
+dependencies:
+  - python
+  - numpy
+  - gdcm
+  
