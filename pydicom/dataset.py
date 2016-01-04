@@ -414,19 +414,21 @@ class Dataset(dict):
             # read the file using GDCM
             gdcm_image = gdcm.Image()
             
-            # FIXME deal with NumberOfFrames, PlanarConfiguration
+            # FIXME deal with NumberOfFrames, PlanarConfiguration ?
             
             # set pixel data
             gdcm_pixel_data_element = gdcm.DataElement(gdcm.Tag(0x7fe0, 0x0010))
-            gdcm_sequence_of_fragments = gdcm.SequenceOfFragments()
+            gdcm_sequence_of_fragments = gdcm.SequenceOfFragments.New()
             gdcm_fragment = gdcm.Fragment()
-            if sys.version_info >= (3, 0):
+            if False or sys.version_info >= (3, 0):
+                # FIXME this doesn't work
                 gdcm_bytes_as_unicode = self.PixelData.decode("utf-8", "surrogateescape")
                 gdcm_fragment.SetByteValue(gdcm_bytes_as_unicode, gdcm.VL(len(gdcm_bytes_as_unicode)))
             else:
-                gdcm_fragment.SetByteValue(self.PixelData, len(self.PixelData))
+                # FIXME this works!
+                gdcm_fragment.SetByteValue(self.PixelData, gdcm.VL(len(self.PixelData)))
             gdcm_sequence_of_fragments.AddFragment(gdcm_fragment)
-            gdcm_pixel_data_element.SetValue(gdcm_sequence_of_fragments)         
+            gdcm_pixel_data_element.SetValue(gdcm_sequence_of_fragments.__ref__())         
             gdcm_image.SetDataElement(gdcm_pixel_data_element)
             
             # set photometric interpretation
@@ -481,7 +483,7 @@ class Dataset(dict):
                 '1.2.840.10008.1.2.4.102': gdcm.TransferSyntax.MPEG4AVCH264HighProfileLevel4_1,
                 '1.2.840.10008.1.2.4.103': gdcm.TransferSyntax.MPEG4AVCH264BDcompatibleHighProfileLevel4_1,
             }
-            gdcm_image.SetTransferSyntax(gdcm.TransferSyntax(gdcm_ts_typemap[dataset.file_meta.TransferSyntaxUID.title()]))
+            gdcm_image.SetTransferSyntax(gdcm.TransferSyntax(gdcm_ts_typemap[self.file_meta.TransferSyntaxUID.title()]))
             
             # set dimensions
             # ! gdcm is column major
