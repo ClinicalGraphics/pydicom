@@ -420,12 +420,11 @@ class Dataset(dict):
             gdcm_pixel_data_element = gdcm.DataElement(gdcm.Tag(0x7fe0, 0x0010))
             gdcm_sequence_of_fragments = gdcm.SequenceOfFragments.New()
             gdcm_fragment = gdcm.Fragment()
-            if False or sys.version_info >= (3, 0):
+            if sys.version_info >= (3, 0):
                 # FIXME this doesn't work
                 gdcm_bytes_as_unicode = self.PixelData.decode("utf-8", "surrogateescape")
                 gdcm_fragment.SetByteValue(gdcm_bytes_as_unicode, gdcm.VL(len(gdcm_bytes_as_unicode)))
             else:
-                # FIXME this works!
                 gdcm_fragment.SetByteValue(self.PixelData, gdcm.VL(len(self.PixelData)))
             gdcm_sequence_of_fragments.AddFragment(gdcm_fragment)
             gdcm_pixel_data_element.SetValue(gdcm_sequence_of_fragments.__ref__())         
