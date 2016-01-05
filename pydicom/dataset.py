@@ -358,18 +358,6 @@ class Dataset(dict):
                                 e.args[0])
             compat.reraise(PropertyError, val, tb)
 
-    @property
-    def gdcm_image(self):
-        """Return the pixel data as a GDCM Image"""
-        from pydicom.pixeldata import get_pixel_data_cached
-        try:
-            return get_pixel_data_cached(self)
-        except AttributeError:
-            t, e, tb = sys.exc_info()
-            val = PropertyError("AttributeError in pixel_array property: " +
-                                e.args[0])
-            compat.reraise(PropertyError, val, tb)
-
     # Format strings spec'd according to python string formatting options
     #    See http://docs.python.org/library/stdtypes.html#string-formatting-operations
     default_element_format = "%(tag)s %(name)-35.35s %(VR)s: %(repval)s"
