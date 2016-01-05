@@ -212,3 +212,7 @@ def generate_uid(prefix=pydicom_root_UID, entropy_srcs=None):
     dicom_uid = prefix + str(int(hash_val.hexdigest(), 16))[:avail_digits]
 
     return UID(dicom_uid)
+
+
+def is_compressed_transfer_syntax(transfer_syntax_uid):
+    return transfer_syntax_uid not in NotCompressedPixelTransferSyntaxes

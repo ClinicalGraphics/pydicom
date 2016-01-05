@@ -29,25 +29,11 @@ from pydicom.datadict import dictionaryVR
 from pydicom.datadict import tag_for_name, all_names_for_tag
 from pydicom.tag import Tag, BaseTag
 from pydicom.dataelem import DataElement, DataElement_from_raw, RawDataElement
-from pydicom.uid import NotCompressedPixelTransferSyntaxes
 from pydicom.tagtools import tag_in_exception
+from pydicom.pixeldata import get_pixel_data_cached
 import pydicom  # for write_file
 import pydicom.charset
 from pydicom.config import logger
-
-sys_is_little_endian = (sys.byteorder == 'little')
-
-have_numpy = True
-try:
-    import numpy
-except ImportError:
-    have_numpy = False
-
-have_gdcm = True
-try:
-    import gdcm
-except:
-    have_gdcm = False
 
 stat_available = True
 try:
@@ -361,216 +347,23 @@ class Dataset(dict):
         for tag in taglist:
             yield self[tag]
 
-    def _is_uncompressed_transfer_syntax(self):
-        # FIXME uses file_meta here, should really only be thus for FileDataset
-        return self.file_meta.TransferSyntaxUID in NotCompressedPixelTransferSyntaxes
-
-    def _pixel_data_numpy(self):
-        """Return a NumPy array of the pixel data if NumPy is available.
-        Falls back to GDCM in case of unsupported transfer syntaxes.
-
-        Raises
-        ------
-        TypeError
-            If there is no pixel data or not a supported data type
-        ImportError
-            If NumPy isn't found, or in the case of fallback, if GDCM isn't found.
-
-        Returns
-        -------
-        NumPy array
-        """
-        if not self._is_uncompressed_transfer_syntax() and not have_gdcm:
-            raise NotImplementedError("Pixel Data is compressed in a format pydicom does not yet handle. Cannot return array. Pydicom might be able to convert the pixel data using GDCM if it is installed.")
-        if not have_numpy:
-            raise ImportError("The Numpy package is required to use pixel_array, and numpy could not be imported.\n")
-        if 'PixelData' not in self:
-            raise TypeError("No pixel data found in this dataset.")
-        
-        
-        # There are two cases:
-        # 1) uncompressed PixelData -> use numpy
-        # 2) compressed PixelData, filename is available and GDCM is available -> use GDCM
-        if self._is_uncompressed_transfer_syntax():
-            # Make NumPy format code, e.g. "uint16", "int32" etc
-            # from two pieces of info:
-            #    self.PixelRepresentation -- 0 for unsigned, 1 for signed;
-            #    self.BitsAllocated -- 8, 16, or 32
-            format_str = '%sint%d' % (('u', '')[self.PixelRepresentation],
-                                      self.BitsAllocated)
-            try:
-                numpy_dtype = numpy.dtype(format_str)
-            except TypeError:
-                msg = ("Data type not understood by NumPy: "
-                       "format='%s', PixelRepresentation=%d, BitsAllocated=%d")
-                raise TypeError(msg % (format_str, self.PixelRepresentation,
-                                self.BitsAllocated))
-        
-            if self.is_little_endian != sys_is_little_endian:
-                numpy_dtype.newbyteorder('S')
-            
-            pixel_bytearray = self.PixelData
-        elif have_gdcm:
-            # read the file using GDCM
-            gdcm_image = gdcm.Image()
-            
-            # FIXME deal with NumberOfFrames, PlanarConfiguration ?
-            
-            # set pixel data
-            gdcm_pixel_data_element = gdcm.DataElement(gdcm.Tag(0x7fe0, 0x0010))
-            gdcm_sequence_of_fragments = gdcm.SequenceOfFragments.New()
-            gdcm_fragment = gdcm.Fragment()
-            if sys.version_info >= (3, 0):
-                # FIXME this doesn't work
-                gdcm_bytes_as_unicode = self.PixelData.decode("utf-8", "surrogateescape")
-                gdcm_fragment.SetByteValue(gdcm_bytes_as_unicode, gdcm.VL(len(gdcm_bytes_as_unicode)))
-            else:
-                gdcm_fragment.SetByteValue(self.PixelData, gdcm.VL(len(self.PixelData)))
-            gdcm_sequence_of_fragments.AddFragment(gdcm_fragment)
-            gdcm_pixel_data_element.SetValue(gdcm_sequence_of_fragments.__ref__())         
-            gdcm_image.SetDataElement(gdcm_pixel_data_element)
-            
-            # set photometric interpretation
-            gdcm_pi_typemap = {
-                'UNKNOW': gdcm.PhotometricInterpretation.UNKNOW,
-                'MONOCHROME1': gdcm.PhotometricInterpretation.MONOCHROME1,
-                'MONOCHROME2': gdcm.PhotometricInterpretation.MONOCHROME2,
-                'PALETTE_COLOR': gdcm.PhotometricInterpretation.PALETTE_COLOR,
-                'RGB': gdcm.PhotometricInterpretation.RGB,
-                'HSV': gdcm.PhotometricInterpretation.HSV,
-                'ARGB': gdcm.PhotometricInterpretation.ARGB,
-                'CMYK': gdcm.PhotometricInterpretation.CMYK,
-                'YBR_FULL': gdcm.PhotometricInterpretation.YBR_FULL,
-                'YBR_FULL_422': gdcm.PhotometricInterpretation.YBR_FULL_422,
-                'YBR_PARTIAL_422': gdcm.PhotometricInterpretation.YBR_PARTIAL_422,
-                'YBR_PARTIAL_420': gdcm.PhotometricInterpretation.YBR_PARTIAL_420,
-                'YBR_ICT': gdcm.PhotometricInterpretation.YBR_ICT,
-                'YBR_RCT': gdcm.PhotometricInterpretation.YBR_RCT,
-            }
-            gdcm_image.SetPhotometricInterpretation(gdcm.PhotometricInterpretation(gdcm_pi_typemap[self.PhotometricInterpretation]))
-            
-            # set pixel format
-            gdcm_pixel_type = gdcm.PixelFormat(self.SamplesPerPixel, self.BitsAllocated, self.BitsStored, self.HighBit, self.PixelRepresentation)
-            gdcm_image.SetPixelFormat(gdcm_pixel_type)
-            
-            # set transfer syntax
-            gdcm_ts_typemap = { 
-                '1.2.840.10008.1.2': gdcm.TransferSyntax.ImplicitVRLittleEndian, 
-                '1.2.840.113619.5.2': gdcm.TransferSyntax.ImplicitVRBigEndianPrivateGE, 
-                '1.2.840.10008.1.2.1': gdcm.TransferSyntax.ExplicitVRLittleEndian, 
-                '1.2.840.10008.1.2.1.99': gdcm.TransferSyntax.DeflatedExplicitVRLittleEndian, 
-                '1.2.840.10008.1.2.2': gdcm.TransferSyntax.ExplicitVRBigEndian, 
-                '1.2.840.10008.1.2.4.50': gdcm.TransferSyntax.JPEGBaselineProcess1, 
-                '1.2.840.10008.1.2.4.51': gdcm.TransferSyntax.JPEGExtendedProcess2_4, 
-                '1.2.840.10008.1.2.4.52': gdcm.TransferSyntax.JPEGExtendedProcess3_5, 
-                '1.2.840.10008.1.2.4.53': gdcm.TransferSyntax.JPEGSpectralSelectionProcess6_8, 
-                '1.2.840.10008.1.2.4.55': gdcm.TransferSyntax.JPEGFullProgressionProcess10_12, 
-                '1.2.840.10008.1.2.4.57': gdcm.TransferSyntax.JPEGLosslessProcess14, 
-                '1.2.840.10008.1.2.4.70': gdcm.TransferSyntax.JPEGLosslessProcess14_1, 
-                '1.2.840.10008.1.2.4.80': gdcm.TransferSyntax.JPEGLSLossless, 
-                '1.2.840.10008.1.2.4.81': gdcm.TransferSyntax.JPEGLSNearLossless, 
-                '1.2.840.10008.1.2.4.90': gdcm.TransferSyntax.JPEG2000Lossless, 
-                '1.2.840.10008.1.2.4.91': gdcm.TransferSyntax.JPEG2000, 
-                '1.2.840.10008.1.2.4.92': gdcm.TransferSyntax.JPEG2000Part2Lossless, 
-                '1.2.840.10008.1.2.4.93': gdcm.TransferSyntax.JPEG2000Part2, 
-                '1.2.840.10008.1.2.5': gdcm.TransferSyntax.RLELossless, 
-                '1.2.840.10008.1.2.4.100': gdcm.TransferSyntax.MPEG2MainProfile, 
-                #'': gdcm.TransferSyntax.ImplicitVRBigEndianACRNEMA, 
-                #'': gdcm.TransferSyntax.CT_private_ELE, 
-                '1.2.840.10008.1.2.4.94': gdcm.TransferSyntax.JPIPReferenced, 
-                '1.2.840.10008.1.2.4.101': gdcm.TransferSyntax.MPEG2MainProfileHighLevel,
-                '1.2.840.10008.1.2.4.102': gdcm.TransferSyntax.MPEG4AVCH264HighProfileLevel4_1,
-                '1.2.840.10008.1.2.4.103': gdcm.TransferSyntax.MPEG4AVCH264BDcompatibleHighProfileLevel4_1,
-            }
-            gdcm_image.SetTransferSyntax(gdcm.TransferSyntax(gdcm_ts_typemap[self.file_meta.TransferSyntaxUID.title()]))
-            
-            # set dimensions
-            # ! gdcm is column major
-            gdcm_image.SetNumberOfDimensions(2)
-            gdcm_image.SetDimension(0, self.Columns)
-            gdcm_image.SetDimension(1, self.Rows)
-            
-            # get decompressed pixel array
-            # GDCM returns char* as type str. Under Python 2 `str` are 
-            # byte arrays by default. Python 3 decodes this to 
-            # unicode strings by default.
-            # The SWIG docs mention that they always decode byte streams 
-            # as utf-8 strings for Python 3, with the `surrogateescape` 
-            # error handler configured.
-            # Therefore, we can encode them back to their original bytearray
-            # representation on Python 3 by using the same parameters.
-            pixel_bytearray = gdcm_image.GetBuffer()
-            if sys.version_info >= (3, 0):
-                pixel_bytearray = pixel_bytearray.encode("utf-8", "surrogateescape")
-            
-            # determine the correct numpy datatype
-            gdcm_numpy_typemap = {
-                gdcm.PixelFormat.INT8:     numpy.int8,
-                gdcm.PixelFormat.UINT8:    numpy.uint8,
-                #gdcm.PixelFormat.UINT12:   numpy.uint12,
-                #gdcm.PixelFormat.INT12:    numpy.int12,
-                gdcm.PixelFormat.UINT16:   numpy.uint16,
-                gdcm.PixelFormat.INT16:    numpy.int16,
-                gdcm.PixelFormat.UINT32:   numpy.uint32,
-                gdcm.PixelFormat.INT32:    numpy.int32,
-                #gdcm.PixelFormat.UINT64:   numpy.uint64,
-                #gdcm.PixelFormat.INT64:    numpy.int64,
-                #gdcm.PixelFormat.FLOAT16:  numpy.float16,
-                gdcm.PixelFormat.FLOAT32:  numpy.float32,
-                gdcm.PixelFormat.FLOAT64:  numpy.float64,
-                #gdcm.PixelFormat.SINGLEBIT:  numpy.bit,
-                #gdcm.PixelFormat.UNKNOWN:  numpy.unknown,
-            }
-            gdcm_pixel_format = gdcm_image.GetPixelFormat().GetScalarType()
-            numpy_dtype = gdcm_numpy_typemap[gdcm_pixel_format]
-
-            # if GDCM indicates that a byte swap is in order, make sure to inform numpy as well
-            if gdcm_image.GetNeedByteSwap():
-                numpy_dtype.newbyteorder('S')
-
-        pixel_array = numpy.fromstring(pixel_bytearray, dtype=numpy_dtype)
-
-        # Note the following reshape operations return a new *view* onto pixel_array, but don't copy the data
-        if 'NumberOfFrames' in self and self.NumberOfFrames > 1:
-            if self.SamplesPerPixel > 1:
-                #TODO: Handle Planar Configuration attribute
-                assert self.PlanarConfiguration == 0
-                pixel_array = pixel_array.reshape(self.NumberOfFrames, self.Rows, self.Columns, self.SamplesPerPixel)
-            else:
-                pixel_array = pixel_array.reshape(self.NumberOfFrames, self.Rows, self.Columns)
-        else:
-            if self.SamplesPerPixel > 1:
-                if self.BitsAllocated == 8:
-                    if self.PlanarConfiguration == 0:
-                        pixel_array = pixel_array.reshape(self.Rows, self.Columns, self.SamplesPerPixel)
-                    else:
-                        pixel_array = pixel_array.reshape(self.SamplesPerPixel, self.Rows, self.Columns)
-                        pixel_array = pixel_array.transpose(1, 2, 0)
-                else:
-                    raise NotImplementedError("This code only handles SamplesPerPixel > 1 if Bits Allocated = 8")
-            else:
-                pixel_array = pixel_array.reshape(self.Rows, self.Columns)
-        return pixel_array
-
-    # Use by pixel_array property
-    def _get_pixel_array(self):
-        # Check if already have converted to a NumPy array
-        # Also check if self.PixelData has changed. If so, get new NumPy array
-        already_have = True
-        if not hasattr(self, "_pixel_array"):
-            already_have = False
-        elif self._pixel_id != id(self.PixelData):
-            already_have = False
-        if not already_have:
-            self._pixel_array = self._pixel_data_numpy()
-            self._pixel_id = id(self.PixelData)  # FIXME is this guaranteed to work if memory is re-used??
-        return self._pixel_array
-
     @property
     def pixel_array(self):
         """Return the pixel data as a NumPy array"""
         try:
-            return self._get_pixel_array()
+            return get_pixel_data_cached(self)
+        except AttributeError:
+            t, e, tb = sys.exc_info()
+            val = PropertyError("AttributeError in pixel_array property: " +
+                                e.args[0])
+            compat.reraise(PropertyError, val, tb)
+
+    @property
+    def gdcm_image(self):
+        """Return the pixel data as a GDCM Image"""
+        from pydicom.pixeldata import get_pixel_data_cached
+        try:
+            return get_pixel_data_cached(self)
         except AttributeError:
             t, e, tb = sys.exc_info()
             val = PropertyError("AttributeError in pixel_array property: " +
