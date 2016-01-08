@@ -70,7 +70,10 @@ try:
         '1.2.840.10008.1.2.4.102': gdcm.TransferSyntax.MPEG4AVCH264HighProfileLevel4_1,
         '1.2.840.10008.1.2.4.103': gdcm.TransferSyntax.MPEG4AVCH264BDcompatibleHighProfileLevel4_1,
     }
+except:
+    have_gdcm = False
 
+if have_numpy and have_gdcm:
     gdcm_numpy_pixel_format_typemap = {
         gdcm.PixelFormat.INT8: np.int8,
         gdcm.PixelFormat.UINT8: np.uint8,
@@ -88,11 +91,9 @@ try:
         # gdcm.PixelFormat.SINGLEBIT:  np.bit,
         # gdcm.PixelFormat.UNKNOWN:  np.unknown,
     }
-except:
-    have_gdcm = False
 
 
-def numpy_dtype_from_dataset(ds):
+def construct_numpy_dtype(ds):
     # Make NumPy format code, e.g. "uint16", "int32" etc
     # from two pieces of info:
     #    ds.PixelRepresentation -- 0 for unsigned, 1 for signed;
@@ -135,27 +136,56 @@ def construct_gdcm_pixel_data_element(ds):
 def construct_gdcm_image_from_dataset(ds):
     image = gdcm.Image()
 
-    # construct GDCM PixelData element
-    pixel_data_element = construct_gdcm_pixel_data_element(ds)
-    image.SetDataElement(pixel_data_element)
+    # note that the order in which these operations are performed is critical to good operation of GDCM
+    # see GDCM's PixmapReader.cxx
 
-    # set photometric interpretation
-    image.SetPhotometricInterpretation(
-        gdcm.PhotometricInterpretation(gdcm_photometric_interpretation_typemap[ds.PhotometricInterpretation]))
+    # set transfer syntax
+    transfer_syntax = gdcm_transfer_syntax_typemap[ds.file_meta.TransferSyntaxUID.title()]
+    image.SetTransferSyntax(gdcm.TransferSyntax(transfer_syntax))
+
+    # set dimensions (GDCM is column major)
+    if 'NumberOfFrames' in ds and ds.NumberOfFrames > 1:
+        image.SetNumberOfDimensions(3)
+        image.SetDimension(2, ds.NumberOfFrames)
+    else:
+        image.SetNumberOfDimensions(2)
+    image.SetDimension(0, ds.Columns)
+    image.SetDimension(1, ds.Rows)
 
     # set pixel format
     pixel_format = gdcm.PixelFormat(ds.SamplesPerPixel, ds.BitsAllocated, ds.BitsStored, ds.HighBit,
-                                       ds.PixelRepresentation)
+                                    ds.PixelRepresentation)
     image.SetPixelFormat(pixel_format)
 
-    # set transfer syntax
-    transfer_syntax_uid = ds.file_meta.TransferSyntaxUID.title()
-    image.SetTransferSyntax(gdcm.TransferSyntax(gdcm_transfer_syntax_typemap[transfer_syntax_uid]))
+    # set photometric interpretation
+    image.SetPhotometricInterpretation(
+            gdcm.PhotometricInterpretation(gdcm_photometric_interpretation_typemap[ds.PhotometricInterpretation]))
 
-    # set dimensions (GDCM is column major)
-    image.SetNumberOfDimensions(2)
-    image.SetDimension(0, ds.Columns)
-    image.SetDimension(1, ds.Rows)
+    # planar configuration
+    if 'PlanarConfiguration' in ds:
+        image.SetPlanarConfiguration(ds.PlanarConfiguration)
+
+    # skipping these steps for now:
+    # - palette color
+    # - icon image
+    # - curves
+    # - overlays
+    # see gdcmPixmapReader.cxx
+
+    if transfer_syntax == gdcm.TransferSyntax.ImplicitVRBigEndianPrivateGE:
+        image.SetNeedByteSwap(True)
+
+    # not sure how to handle the following yet
+    # image.SetDirectionCosines(ds.DirectionCosines)
+    # image.SetIntercept(ds.Intercept)
+    # image.SetSlope(ds.Slope)
+    # image.SetSpacing(ds.Spacing)
+    # image.SetOrigin(ds.Origin)
+    # image.SetNumberOfOverlays(ds.NumberOfFrames)
+
+    # construct GDCM PixelData element
+    pixel_data_element = construct_gdcm_pixel_data_element(ds)
+    image.SetDataElement(pixel_data_element)
 
     return image
 
@@ -202,13 +232,13 @@ def get_pixel_data(ds):
     compressed_pixeldata = is_compressed_transfer_syntax(ds.file_meta.TransferSyntaxUID)
     if compressed_pixeldata and not have_gdcm:
         raise NotImplementedError(
-            "Pixel Data is compressed in a format pydicom does not yet handle. Cannot return array. Pydicom might be able to convert the pixel data using GDCM if it is installed.")
+                "Pixel Data is compressed in a format pydicom does not yet handle. Cannot return array. Pydicom might be able to convert the pixel data using GDCM if it is installed.")
     if not have_numpy:
         raise ImportError("The Numpy package is required to use pixel_array, and numpy could not be imported.")
     if 'PixelData' not in ds:
         raise TypeError("No pixel data found in this dataset.")
 
-    numpy_dtype = numpy_dtype_from_dataset(ds)
+    numpy_dtype = construct_numpy_dtype(ds)
     pixel_bytearray = ds.PixelData
 
     if compressed_pixeldata and have_gdcm:
